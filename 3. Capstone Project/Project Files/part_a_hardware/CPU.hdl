@@ -1,0 +1,130 @@
+// This file is part of www.nand2tetris.org
+// and the book "The Elements of Computing Systems"
+// by Nisan and Schocken, MIT Press.
+// File name: part_a_hardware/CPU.hdl
+
+/**
+ * The Hack Central Processing Unit (CPU).
+ * Parses the binary code in the instruction input and executes it according to the
+ * Hack machine language specification. In the case of a C-instruction, the c-field
+ * determines the ALU function to be executed and the d-field determines where to store
+ * the result. The value of the d3-field determines if the result should be stored in
+ * data memory (M), in which case writeM is set to 1. The address of M is determined
+ * by the 15-bit value of the A register (addressM).
+ * The outM and writeM outputs are asserted only in cycles when a C-instruction
+ * specifies writing to M.
+ * The A register's content also serves as the default address for the ROM program
+ * memory, unless a jump condition is satisfied.
+ * The pc output always contains the address of the next instruction to be fetched
+ * from the program memory.
+ */
+
+CHIP CPU {
+
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction for execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M? 
+        addressM[15],    // Address in data memory (of M)
+        pc[15];          // address of next instruction
+
+    PARTS:
+    // -------------------------------------------------------------
+    // 1. Instruction Decoding
+    // -------------------------------------------------------------
+    // instruction[15] == 0 -> A-instruction (@value)
+    // instruction[15] == 1 -> C-instruction (dest=comp;jump)
+    Not(in=instruction[15], out=isA);
+    Not(in=isA, out=isC);
+
+    // -------------------------------------------------------------
+    // 2. A Register and A-Register Multiplexer
+    // -------------------------------------------------------------
+    // If A-instruction, route instruction bits into A-register.
+    // If C-instruction, route ALU output into A-register.
+    Mux16(a=instruction, b=aluOut, sel=isC, out=aRegInput);
+
+    // A register is loaded if:
+    // (a) it is an A-instruction (isA == 1), OR
+    // (b) it is a C-instruction and dest bit d1 (instruction[5]) is 1.
+    And(a=isC, b=instruction[5], out=cLoadsA);
+    Or(a=isA, b=cLoadsA, out=loadA);
+    ARegister(in=aRegInput, load=loadA, out=aOut, out[0..14]=addressM);
+
+    // -------------------------------------------------------------
+    // 3. ALU Input Multiplexer (A vs M)
+    // -------------------------------------------------------------
+    // In a C-instruction, instruction[12] (the 'a' bit) selects whether
+    // the ALU operates on the A register (a=0) or memory inM (a=1).
+    Mux16(a=aOut, b=inM, sel=instruction[12], out=aluYInput);
+
+    // -------------------------------------------------------------
+    // 4. D Register
+    // -------------------------------------------------------------
+    // D register is loaded only if it is a C-instruction and dest bit d2 (instruction[4]) is 1.
+    And(a=isC, b=instruction[4], out=loadD);
+    DRegister(in=aluOut, load=loadD, out=dOut);
+
+    // -------------------------------------------------------------
+    // 5. Arithmetic Logic Unit (ALU)
+    // -------------------------------------------------------------
+    // ALU operates on x = D, y = (A or M)
+    // Control bits are instruction[11..6] (zx, nx, zy, ny, f, no)
+    ALU(
+        x=dOut,
+        y=aluYInput,
+        zx=instruction[11],
+        nx=instruction[10],
+        zy=instruction[9],
+        ny=instruction[8],
+        f=instruction[7],
+        no=instruction[6],
+        out=aluOut,
+        out=outM,
+        zr=zrOut,
+        ng=ngOut
+    );
+
+    // -------------------------------------------------------------
+    // 6. Memory Write Enable (writeM)
+    // -------------------------------------------------------------
+    // writeM is asserted if it is a C-instruction and dest bit d3 (instruction[3]) is 1.
+    And(a=isC, b=instruction[3], out=writeM);
+
+    // -------------------------------------------------------------
+    // 7. Jump Logic & Program Counter (PC)
+    // -------------------------------------------------------------
+    // Evaluate ALU output signs:
+    // zrOut = 1 if out == 0
+    // ngOut = 1 if out < 0
+    // pos = 1 if out > 0 (neither zero nor negative)
+    Not(in=zrOut, out=notZr);
+    Not(in=ngOut, out=notNg);
+    And(a=notZr, b=notNg, out=pos);
+
+    // Jump conditions from instruction[2..0] (j1, j2, j3):
+    // j1 (instruction[2]): jump if negative (ngOut)
+    // j2 (instruction[1]): jump if zero (zrOut)
+    // j3 (instruction[0]): jump if positive (pos)
+    And(a=instruction[2], b=ngOut, out=jumpNeg);
+    And(a=instruction[1], b=zrOut, out=jumpZero);
+    And(a=instruction[0], b=pos, out=jumpPos);
+
+    Or(a=jumpNeg, b=jumpZero, out=jumpLE);
+    Or(a=jumpLE, b=jumpPos, out=jumpCondition);
+
+    // Jump occurs only if it is a C-instruction AND condition is met
+    And(a=isC, b=jumpCondition, out=pcLoad);
+
+    // Program Counter:
+    // If pcLoad == 1, load address from A register (aOut).
+    // Otherwise, increment counter (inc = true).
+    // Reset overrides all if reset == 1.
+    PC(in=aOut, load=pcLoad, inc=true, reset=reset, out[0..14]=pc);
+
+}
+
